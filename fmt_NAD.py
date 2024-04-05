@@ -7,11 +7,11 @@ update: hypov8
 
 version 1.0 (2024-04-04)
 ===========
-updated .nad reader
-added .nad exporter
-added popup to choose .nad (for mesh imported with bones)
-fixed import fps
-added export options -nadtaglist -nadtpose
+- updated .nad reader
+- added .nad exporter
+- added popup to choose .nad (for mesh imported with bones)
+- fixed import fps
+- added export options -nadtaglist -nadtpose
 
 
 options
@@ -54,12 +54,12 @@ default noesis switch's
 
 todo
 ========
-click .nad with model open applies animation? if posible!!
-check if bone count match mesh?
-key reduction
-fix animation import names. match original filename..
-set an export framerate(fixed at 0.1)
--looping? last keyframe (0x0000807f)
+- click .nad with model open applies animation? if posible!!
+- check if bone count match mesh?
+- key reduction
+- fix animation import names. match original filename..
+- set an export framerate(fixed at 0.1)
+- -looping? last keyframe (0x0000807f)
 '''
 
 
@@ -87,8 +87,6 @@ def registerNoesisTypes():
     noesis.addOption(handle, NAD_OPT_TAGLIST, "add tags to animation file. <time,type,time,...>", noesis.OPTFLAG_WANTARG)
     return 1
 
-# isTpose = noesis.optWasInvoked(NAD_OPT_TPOSE)
-# hasTagList = noesis.optWasInvoked(NAD_OPT_TAGLIST)
 
 #header indexes
 HDR_VER = 0
@@ -160,24 +158,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
 
     def key_reduction(array, frameRate):
         # key reduction (rotation)
-        # l_ = len(r_)-1
-        # for i, r in enumerate(r_):
-        #     if i == 0:
-        #         r_anims.append(r)
-        #     elif i == l_:
-        #         r_anims.append(r)
-        #         r_prev = r_[i-1]
-        #         r_cur = r_[1]
-        #         r_next = r_[i+1]
 
-        #         if
-
-        #             r_anims.append(r)
-
-        # if bone.parentIndex != -1:
-        #     restTranslate = (bone.getMatrix() * bones[bone.parentIndex].getMatrix().inverse())[3]
-        # else:
-        #     restTranslate = bone.getMatrix()[3]
         return
     # END key_reduction
 
@@ -322,7 +303,9 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
 
         break # 1 track only
 
-    # output file. TODO test: handel multiple anim sequences?
+    #TODO test: handel multiple anim sequences?
+
+    # output file.
     print('write to file')
     for mdl in model_array:
         nad_write_file(bs, mdl)
@@ -373,7 +356,7 @@ def nad_write_file(bs: NoeBitStream, m_data):
                 bs.writeFloat(float(tag[0])) # frame time
                 bs.writeUInt(int(tag[1])) # tag type
         else:
-             bs.writeUInt(0) # empty
+            bs.writeUInt(0) # empty
 
     # write file #
     bs.writeUInt(m_data[HDR_VER])           # 0 version
