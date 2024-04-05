@@ -1,34 +1,56 @@
-#by Durik256
+'''
+update: hypov8
+
+original author: Durik256
+
+'''
+
 from inc_noesis import *
-import noesis
+
+DEBUG_PRINT = False
+NOD_VERSION = 7
+
+# pylint: disable=multiple-statements, fixme, invalid-name
+#   locally-disabled,line-too-long
+
 
 def registerNoesisTypes():
-    handle = noesis.register("Vampire the Masquerade Redemption", ".NOD")
-    noesis.setHandlerTypeCheck(handle, CheckType)
-    noesis.setHandlerLoadModel(handle, LoadModel)
-    noesis.setHandlerWriteModel(handle, noepyWriteModel)
+    handle = noesis.register("Vampire: TMR (NOD Mesh)", ".nod")
+    noesis.setHandlerTypeCheck(handle, nod_checkType)
+    noesis.setHandlerLoadModel(handle, nod_loadModel)
+    noesis.setHandlerWriteModel(handle, nod_write_model)
     noesis.setTypeExportOptions(handle, "-maxvertweights %i -maxverts %i"%(2, 800))
     return 1
 
-def CheckType(data):
 
+def nod_checkType(data):
+    '''  '''
+    bs = NoeBitStream(data)
+    Version = bs.readUInt()
+    if Version != NOD_VERSION:
+        print('ERROR: Wrong version (%i). expecting (%i)'% (Version, NOD_VERSION))
     return 1
 
-bones = []
-def LoadModel(data, mdlList):
+
+# bones = []
+
+def nod_loadModel(data, mdlList):
     bs = NoeBitStream(data)
     ctx = rapi.rpgCreateContext()
-    global bones
+    # global bones
     bones = []
+    materials = []
+
     #Format
     Version = bs.readUInt()
+    if Version != NOD_VERSION:
+        print('ERROR: Wrong version (%i). expecting (%i)'% (Version, NOD_VERSION))
+
     NumMaterials = bs.readUInt()
-    
-    materials = []
     for x in range(NumMaterials):
         name = noeStrFromBytes(bs.read(32))
         materials.append(NoeMaterial(name, ''))
-    
+
     NumBones = bs.readUShort()
     NumMeshs = bs.readUShort()
     NumVertices = bs.readUInt()
@@ -36,23 +58,30 @@ def LoadModel(data, mdlList):
     NumGroups = bs.readUShort()
     ModelFlags = bs.readUInt()
     Bounds = bs.read('6f')#min(XYZ), max(XYZ)
-    print(ModelFlags,NumVertices,NumFaces,NumGroups)
-    
+    print(
+        'flags:%i '%(ModelFlags),
+        'verts:%i '%(NumVertices),
+        'faces:%i '%(NumFaces),
+        'groups:%i '%(NumGroups),
+        'materials:%i '%(NumMaterials))
+
     #ModelFlags Bitvector Definition
     HASLOD = ModelFlags & 0x1
     INLINE = ModelFlags & 0x2
     STATIC = ModelFlags & 0x4
     RESERVED1 = ModelFlags & 0x8
     RESERVED2 = ModelFlags & 0x10
-    
-    print("HASLOD:", HASLOD)
-    print("INLINE:", INLINE)
-    print("STATIC:", STATIC)
-    print("RESERVED1:", RESERVED1)
-    print("RESERVED2:", RESERVED2)
-    
+
+    print(
+        "HasLOD:%i "%(HASLOD),
+        "Inline:%i "%(INLINE),
+        "Static:%i "%(STATIC),
+        "Reserved1:%i "%(RESERVED1),
+        "Reserved2:%i "%(RESERVED2))
+
     #Bone Definitions
-    
+    if DEBUG_PRINT:
+        print("%-6s %3s %3s %3s"% ('bone# ', 'P', 'Ch', 'Si'))
     for x in range(NumBones):#66 bytes
         RestTranslate = NoeVec3.fromBytes(bs.read(12))#bs.read('3f')
         RestMatrixInverse = NoeMat43.fromBytes(bs.read(48)).transpose().inverse()
@@ -60,20 +89,21 @@ def LoadModel(data, mdlList):
         ChildID = bs.readShort()
         ParentID = bs.readShort()
         bones.append(NoeBone(x, 'bone_%i'%x, RestMatrixInverse, None, ParentID))
-        print(x,'>>>',[ParentID,ChildID,SiblingID])
-        print('RestTranslate:',RestTranslate, 'RestMatrixInverse:',RestMatrixInverse)
-    
+        if DEBUG_PRINT:
+            print("%-3i%3s[%3i,%3i,%3i]"% (x, '>>>', ParentID, ChildID, SiblingID))
+            print('RestTranslate:', RestTranslate, 'RestMatrixInverse:', RestMatrixInverse)
+
     mesh_names = []
     for x in range(NumMeshs):
         name = noeStrFromBytes(bs.read(32))
         mesh_names.append(name)
-    
+
     vbuf_ofs = bs.tell()
     bs.seek(NumVertices * 40, 1)
-    
+
     if HASLOD:
         bs.seek(NumVertices * 2, 1)
-    
+
     ibuf_ofs = bs.tell()
     bs.seek(NumFaces * 6, 1)
 
@@ -85,40 +115,44 @@ def LoadModel(data, mdlList):
         NumVertices = bs.readUShort()
         MinVertices = bs.readUShort()
         GroupFlags = bs.readUShort()
-        print('>>>>>GROUP:',Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags)
+        if DEBUG_PRINT:
+            print('>>>>>GROUP:',Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags)
         #---------------
         HASLOD = (GroupFlags & 0x1)#bool
         NOWEIGHTS = (GroupFlags & 0x2)
         NOSKINNING = (GroupFlags & 0x4)
         MULTITEXTURE = (GroupFlags & 0x8)
-        print("HASLOD:", HASLOD)
-        print("NOWEIGHTS:", NOWEIGHTS)
-        print("NOSKINNING:", NOSKINNING)
-        print("MULTITEXTURE:", MULTITEXTURE)
+        if DEBUG_PRINT:
+            print("HASLOD:", HASLOD)
+            print("NOWEIGHTS:", NOWEIGHTS)
+            print("NOSKINNING:", NOSKINNING)
+            print("MULTITEXTURE:", MULTITEXTURE)
         #---------------
         BoneNum = bs.read(1)#bs.readUByte()
         MeshNum = bs.readUByte()
         unk = bs.readUShort()
-        print(mesh_names[MeshNum])
-        print(Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags,'BoneNum:',BoneNum,MeshNum,unk)
-        
-        curPos  = bs.tell()
+        if DEBUG_PRINT:
+            print(mesh_names[MeshNum])
+            print(Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags,'BoneNum:',BoneNum,MeshNum,unk)
+
+        curPos = bs.tell()
         bs.seek(vbuf_ofs+(vcnt*40))
         vbuf = bs.read(NumVertices * 40)
-        wbuf = printWeight(vbuf)
+        wbuf = printWeight(vbuf, bones)
         bs.seek(ibuf_ofs+(icnt*6))
-        print('ifs:',bs.tell())
+        if DEBUG_PRINT:
+            print('ifs:',bs.tell())
         ibuf = bs.read(NumFaces * 6)
-        
+
         vcnt += NumVertices
         icnt += NumFaces
-        
+
         rapi.rpgSetName(mesh_names[MeshNum])
         rapi.rpgSetMaterial(materials[Material_ID].name)
         rapi.rpgBindPositionBuffer(vbuf, noesis.RPGEODATA_FLOAT, 40)
         rapi.rpgBindNormalBufferOfs(vbuf, noesis.RPGEODATA_FLOAT, 40, 12)
         rapi.rpgBindUV1BufferOfs(vbuf, noesis.RPGEODATA_FLOAT, 40, 24)
-        
+
         if not NOSKINNING:
             rapi.rpgBindBoneIndexBuffer(BoneNum*NumVertices, noesis.RPGEODATA_UBYTE, 1, 1)
             rapi.rpgBindBoneWeightBuffer(b'\xFF'*NumVertices, noesis.RPGEODATA_UBYTE, 1, 1)
@@ -130,23 +164,68 @@ def LoadModel(data, mdlList):
         rapi.rpgCommitTriangles(ibuf, noesis.RPGEODATA_SHORT, len(ibuf)//2, noesis.RPGEO_TRIANGLE)
         rapi.rpgClearBufferBinds()
         bs.seek(curPos)
-    print(vcnt, icnt)
+    print('verts:%i faces:%i'%(vcnt, icnt))
 
-  
     mdl = rapi.rpgConstructModel()##NoeModel()#
-    mdl.setBones(bones)
+
+
+    # ################################## #
+    # load animations from seperate file #
+    if NumBones:
+        nod_load_external_nad_file(mdl, bones)
+
     #mdl.setModelMaterials(NoeModelMaterials(texList, materials))
+    mdl.setBones(bones)
     mdlList.append(mdl)
     rapi.setPreviewOption("setAngOfs", "0 90 0")
     return 1
-    
-def printWeight(buf):
+
+
+def nod_load_external_nad_file(mdl, bones):
+    # file has bones
+    # noesis.logPopup()
+
+    def validate_nod_file(filename):
+        print('filename: ', filename)
+        if (filename is None) or (filename == ''):
+            return "Error: empty file path"
+        if not rapi.checkFileExists(filename):
+            return "Error: invalid file path"
+        if filename[len(filename) -4:] != '.nad':
+            return "Error: invalid file extension"
+        print('filename ok')
+        return None
+
+    print("====== mesh has bones ==========")
+
+    # nad_file = 'F:/dev_code/Vampire_MR/nod/Models/out/base_anim.nad'
+    #debug
+    nad_file = noesis.userPrompt( \
+        noesis.NOEUSERVAL_FILEPATH,
+        'Import Animation', # title string
+        'Found bones. Select a .nad animtion file to use...', # prompt string
+        '', # default value string
+        validate_nod_file)  # input validation handler
+
+
+    if nad_file:
+        # getExtensionlessName
+        try:
+            print('Animation file: ' + nad_file)
+            from fmt_NAD import nad_merge_anims_to_mesh
+            _, _, kfAnims = nad_merge_anims_to_mesh(nad_file, bones)
+            mdl.setAnims(kfAnims)
+        except Exception as e:
+            print('failed to load anims: ', e)
+
+
+def printWeight(buf, bones):
     wbuf = b''
     bs = NoeBitStream(buf)
     for x in range(len(buf)//40):
-        bs.seek(32,1)
+        bs.seek(32, 1)
         w0 = bs.read('f4B')
-        w1 = [0,0]
+        w1 = [0, 0]
         #if w0[1] >= len(bones):
         #    print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>...',w0[1])
         if w0[0] < 0.999999 and bones[w0[1]].parentIndex != -1:
@@ -159,35 +238,35 @@ def printWeight(buf):
         wbuf += noePack('f', w1[0])
 
     return wbuf
-    
-def noepyWriteModel(mdl, bs):
+
+
+def nod_write_model(mdl, bs: NoeBitStream):
     print('WRITE NOD')
     #Format
     bs.writeUInt(7)#version
 
-
     matList = mdl.modelMats.matList
     if not matList:
         matList.append(NoeMaterial('default', ''))
-    
+
     bs.writeUInt(len(matList))#тumMaterials
-    
+
     for mat in matList:
         name = mat.name[:32]
         bs.writeBytes(name.encode() + (b'\x00'*(32-len(name))))
-    
+
     bones = mdl.bones
     if not matList:
-        matList.append(NoeBone(0,'Root', NoeMat43()))
-    
+        matList.append(NoeBone(0, 'Root', NoeMat43()))
+
     meshes = mdl.meshes
     min_bounds, max_bounds = NoeVec3(), NoeVec3()
     total_vert, total_tris = 0, 0
-    
+
     for mesh in meshes:
         total_vert += len(mesh.positions)
         total_tris += len(mesh.indices)//3
-        
+
         for pos in mesh.positions:
             min_bounds = NoeVec3([min(pos[0], min_bounds[0]), min(pos[1], min_bounds[1]), min(pos[2], min_bounds[2])])
             max_bounds = NoeVec3([max(pos[0], max_bounds[0]), max(pos[1], max_bounds[1]), max(pos[2], max_bounds[2])])
@@ -198,22 +277,22 @@ def noepyWriteModel(mdl, bs):
     bs.writeUInt(total_tris)#numFaces
     bs.writeUShort(len(meshes))#numGroups
     bs.writeUInt(0)#ModelFlags
-    
+
     bs.writeBytes(min_bounds.toBytes())
     bs.writeBytes(max_bounds.toBytes())
-    
+
     nodes = []#SiblingID, ChildID, ParentID
     #create nodes info
     for bone in bones:
-        nodes.append([-1,-1,bone.parentIndex])
-        
+        nodes.append([-1, -1, bone.parentIndex])
+
     #set child
     for x in range(len(nodes)):
         for y in range(len(nodes)):
             if nodes[y][2] == x:
                 nodes[x][1] = y
                 break
-    
+
     #set sibling
     for x in range(len(nodes)):
         sibling = []
@@ -225,14 +304,16 @@ def noepyWriteModel(mdl, bs):
                 if sibling[y] == x:
                     if y+1 < len(sibling):
                         nodes[x][0] = sibling[y+1]
-        
-        
-    for i,node in enumerate(nodes):
-        print(i,'>>>',[node[2],node[1],node[0]])
-    
-    local = noeCalculateLocalBoneTransforms(bones)
+
+    if DEBUG_PRINT:
+        print("%-6s %3s %3s %3s"% ('bone# ', 'P', 'Ch', 'Si'))
+        for i, node in enumerate(nodes):
+            # print(i, '>>>', [node[2], node[1], node[0]])
+            print("%-3i%3s[%3i,%3i,%3i]"% (i, '>>>', node[2], node[1], node[0]))
+            # )
+    # local = noeCalculateLocalBoneTransforms(bones)
     #Bone Definitions
-    for i,bone in enumerate(bones):#66 bytes
+    for i, bone in enumerate(bones):#66 bytes
         if bone.parentIndex != -1:
             restTranslate = (bone.getMatrix() * bones[bone.parentIndex].getMatrix().inverse())[3]
         else:
@@ -244,7 +325,7 @@ def noepyWriteModel(mdl, bs):
         bs.writeShort(nodes[i][0])#SiblingID
         bs.writeShort(nodes[i][1])#ChildID
         bs.writeShort(bone.parentIndex)#ParentID
-    
+
     #write meshes names
     for mesh in meshes:
         name = mesh.name[:32]
@@ -274,12 +355,12 @@ def noepyWriteModel(mdl, bs):
             bs.writeUShort(x)
 
     #write mesh group
-    for j,mesh in enumerate(meshes):
+    for j, mesh in enumerate(meshes):
         Material_ID = 0
-        for i,mat in enumerate(matList):
+        for i, mat in enumerate(matList):
             if mesh.matName == mat.name:
                 Material_ID = i
-        
+
         bs.writeInt(Material_ID)#material_ID
         bs.writeBytes(b'\x00'*12)#RESERVED This field should be ignored
         bs.writeUShort(len(mesh.indices)//3)#numFaces
@@ -292,45 +373,3 @@ def noepyWriteModel(mdl, bs):
     return 1
     #95.507 17.845 -3.004
     #0.868 -29.758 -0.031
-'''
-0 >>> [-1, 1, -1]
-1 >>> [0, 2, 5]
-2 >>> [1, 3, -1]
-3 >>> [2, 4, -1]
-4 >>> [3, -1, -1]
-5 >>> [0, 6, 9]
-6 >>> [5, 7, -1]
-7 >>> [6, 8, -1]
-8 >>> [7, -1, -1]
-9 >>> [0, 10, 12]
-10 >>> [9, 11, -1]
-11 >>> [10, -1, -1]
-12 >>> [0, 13, 14]
-13 >>> [12, -1, -1]
-14 >>> [0, 15, 39]
-15 >>> [14, 16, -1]
-16 >>> [15, 17, -1]
-17 >>> [16, 18, 21]
-18 >>> [17, 19, -1]
-19 >>> [18, -1, 20]
-20 >>> [18, -1, -1]
-21 >>> [16, 22, 26]
-22 >>> [21, 23, -1]
-23 >>> [22, 24, -1]
-24 >>> [23, -1, 25]
-25 >>> [23, -1, -1]
-26 >>> [16, 27, 31]
-27 >>> [26, 28, -1]
-28 >>> [27, 29, 30]
-29 >>> [28, -1, -1]
-30 >>> [27, -1, -1]
-31 >>> [16, 32, -1]
-32 >>> [31, 33, -1]
-33 >>> [32, 34, 35]
-34 >>> [33, -1, -1]
-35 >>> [32, 36, 37]
-36 >>> [35, -1, -1]
-37 >>> [32, 38, -1]
-38 >>> [37, -1, -1]
-39 >>> [0, -1, -1]
-'''
