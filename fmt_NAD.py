@@ -5,6 +5,17 @@ original author: Durik256
 update: hypov8
 
 
+options
+========
+-nadtpose
+    export animation file in tpose(if thats rest position).
+    used to helps to skin a new mesh to skeleton
+-nadtaglist <arg>
+    add tags to animation file.(frame,type) eg -nadtaglist 3.0,5,15.0,4
+-nadnoopt
+    dont reduce keyframe counts. every frame is a keyframe
+
+
 version 1.0 (2024-04-04)
 ===========
 - updated .nad reader
@@ -13,14 +24,12 @@ version 1.0 (2024-04-04)
 - fixed import fps
 - added export options -nadtaglist -nadtpose
 
+version 1.1 (2024-04-08)
+===========
+- added linear key reduction (use -nadnoopt to disable)
+- fixed import frame count issues (range -1)
+- fixed export frame count issues (range +1)
 
-options
-========
--nadtpose
-    export animation file in tpose(if thats rest position).
-    used to helps to skin a new mesh to skeleton
--nadtaglist <arg>
-    add tags to animation file.(frame,type) eg -nadtaglist 3.0,5,15.0,4
 
 tag type:
     0: lwalk
@@ -56,22 +65,23 @@ todo
 ========
 - click .nad with model open applies animation? if posible!!
 - check if bone count match mesh?
-- key reduction
 - fix animation import names. match original filename..
-- set an export framerate(fixed at 0.1)
+- set an export framerate. currently fixed at 1 (1/fps)
 - -looping? last keyframe (0x0000807f)
 '''
 
 
 from inc_noesis import * # noesis, NoeVec3, NoeBone, NoeAnim, NoeBitStream
 
+
 # pylint: disable=multiple-statements, fixme, invalid-name
 #   locally-disabled,line-too-long
 
 NAD_VERSION = 3
 NAD_FRAMERATE = 30
-NAD_OPT_TPOSE = "-nadtpose"
-NAD_OPT_TAGLIST = "-nadtaglist"
+NAD_OPT_TPOSE = "-nadtpose" # export aniims in rest pose
+NAD_OPT_TAGLIST = "-nadtaglist" # add custom tag string
+NAD_OPT_NOOPT = "-nadnoopt" # dont reduce keyframe counts
 
 
 def registerNoesisTypes():
@@ -85,6 +95,7 @@ def registerNoesisTypes():
     noesis.setHandlerWriteAnim(handle, nad_export_anim)
     noesis.addOption(handle, NAD_OPT_TPOSE, "export animation in t-pose.", 0)
     noesis.addOption(handle, NAD_OPT_TAGLIST, "add tags to animation file. <time,type,time,...>", noesis.OPTFLAG_WANTARG)
+    noesis.addOption(handle, NAD_OPT_NOOPT, "export animation in t-pose.", 0)
     return 1
 
 
@@ -96,6 +107,8 @@ HDR_NUM_FRAME = 3
 HDR_TRACKS = 4
 HDR_NUM_TAG = 5
 HDR_TAGS = 6
+
+NAD_EPSILON = 0.01 # vector compare. for linear key reduction
 
 # bone track index
 BTRACK_0_NUM_KEYS = 0   # "B_NUM"
@@ -146,6 +159,7 @@ class nad_key_xyz:
         self.square_cf = square_cf  # 5
 
 
+# @entry export
 def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
     ''' entry for animation export '''
     print('WRITE: Vampire the Masquerade Redemption .NAD')
@@ -156,22 +170,90 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
         return 0
     # rapi.setDeferredAnims(anims)
 
-    def key_reduction(array, frameRate):
-        # key reduction (rotation)
+    def vec3_linear_compare(start: NoeAngles, mid: NoeAngles, end: NoeAngles):
+        ''' compare vector'''
+        vec_sum = NoeAngles((0.0, 0.0, 0.0))
+        for v in mid: # sum vec array(middle ranges)
+            vec_sum = vec_sum.__add__(v)
+        vec_sum = vec_sum.__div__(len(mid))
 
-        return
+        vec = start.__add__(end) / 2.0
+        if (abs(vec[0] - vec_sum[0]) < NAD_EPSILON and \
+            abs(vec[1] - vec_sum[1]) < NAD_EPSILON and \
+            abs(vec[2] - vec_sum[2]) < NAD_EPSILON \
+        ):
+            return True # linar vec. moving in same dir...
+        return False
+
+    def key_reduction(keys_array, frameTime):
+        ''' reduce saved keyframes.
+        simple linear optimization.
+        '''
+        i, j = 0, 0
+        key_count = len(keys_array)-1
+
+        # needs 2 keyframes
+        if (key_count + 1) < 2:
+            return keys_array
+
+        while i <= key_count:
+            key_curr = keys_array[i]
+            if i == key_count: # last key
+                key_curr.scale = float('inf') #.fromhex("0x0000807f")
+                break
+            i += 1
+            if keys_array[i].scale == 0.0:
+                continue # unused
+            cur_mid_val = []
+            # look ahead by 2. skip last index
+            for j in range(i, key_count):
+                key_next1 = keys_array[j]
+                key_next2 = keys_array[j+1]
+                cur_mid_val.append(key_next1.xyz)
+                if vec3_linear_compare(key_curr.xyz, cur_mid_val, key_next2.xyz):
+                    key_curr.scale += frameTime
+                    key_next1.scale = 0.0
+                else:
+                    i = j+1
+                    break
+
+        # only add frames that have changes
+        out_array = []
+        for key in keys_array:
+            if key.scale != 0.0:
+                if key.scale != float('inf'):
+                    key.scale = 1.0/key.scale
+                out_array.append(key)
+
+        # add lerp
+        key_count = len(out_array)
+        for i, key in enumerate(out_array):
+            xyz_st = key.xyz
+            xyz_end = out_array[(i + 1) % key_count].xyz
+            key.linear_cf = NoeVec3(( \
+                xyz_end[0] - xyz_st[0],
+                xyz_end[1] -  xyz_st[1],
+                xyz_end[2] -  xyz_st[2]))
+
+        return out_array
     # END key_reduction
 
-    def build_track_data(anim_bone_array, frameRate):
+    def build_track_data(anim_bone_array, frameRate, l_frames):
         ''' full bone data in array '''
         count_tracks = 0
+        count_keys = 0
         bone_tracks = []
-        isTpose = noesis.optWasInvoked(NAD_OPT_TPOSE)
-        print('option T-Pose: ', isTpose)
 
-        print("track count: ", len(anim_bone_array))
+        isTpose = noesis.optWasInvoked(NAD_OPT_TPOSE)
+        isNoLerp = noesis.optWasInvoked(NAD_OPT_NOOPT)
+        print('option T-Pose: ', isTpose)
+        print('option No Lerp: ', isNoLerp)
+
+        frameTime = 1.0 # time to display each frame
+        if verbose:
+            print('export frameRate: ', frameRate, " frameTime: ", frameTime)
+
         for b_idx, fr_bones in enumerate(anim_bone_array): #[b][fr]
-            # print("bone: ", b_idx, " len: ", len(fr_bones))
             t_anims, r_anims = [], []
             for fr, bone in enumerate(fr_bones):
                 # bone: NoeBone
@@ -183,12 +265,14 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
 
                 if isTpose:
                     rot = NoeAngles()
-                    pos = NoeVec3((0.0, 0.0, 0.0))
-                scale = float(0.0333) # TODO 1/(FPS)
+                    pos = NoeVec3()
+
+                scale = frameTime # also set in optimize.
+
                 r_anims.append(
                     nad_key_rot(
                         float(fr),  # KF_0_FR = 0
-                        scale,      # KF_1_SCALE = 1 TODO
+                        scale,      # KF_1_SCALE = 1
                         rot,        # KF_2_XYZ = 2
                         NoeVec3(),  # KF_3_CFACT = 3
                         NoeVec3(),  # KF_4_BFACT = 4
@@ -198,7 +282,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
                     t_anims.append(
                         nad_key_xyz(
                             float(fr),  # KF_0_FR = 0
-                            scale,      # KF_1_SCALE = 1 TODO
+                            scale,      # KF_1_SCALE = 1
                             pos,        # KF_2_XYZ = 2
                             NoeVec3(),  # KF_3_CFACT = 3
                             NoeVec3(),  # KF_4_BFACT = 4
@@ -209,11 +293,22 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
             count_tracks += 1 if (len(t_anims) > 0) else 0
             count_tracks += 1 if (len(r_anims) > 0) else 0
 
+            # optimize file
+            if not isNoLerp:
+                t_anims = key_reduction(t_anims, frameTime)
+                r_anims = key_reduction(r_anims, frameTime)
+            # optimized counts
+            count_keys += len(t_anims)
+            count_keys += len(r_anims)
+
             bone_tracks.append((
                 b_idx,    # BONE_ANIMS_IDX = 0
                 t_anims,  # BONE_ANIMS_T = 1
                 r_anims)) # BONE_ANIMS_R = 2
 
+        if verbose:
+            trk_cnt = count_tracks * l_frames
+            print("total keys:%i optimized keys: %i"%(trk_cnt, count_keys))
         return bone_tracks, count_tracks
     # END build_track_data():
 
@@ -231,7 +326,6 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
                 n_bone.setMatrix(anim.frameMats[l_bones * fr_idx + b.index]) #b_idx?
                 n_bones.append(n_bone)
             anim_bones_array.append(n_bones)
-        print('v2 boneCnt: ', len(anim_bones_array))
 
         # sort array into [bone_idx][keyframes]
         for b_idx in range(l_bones):
@@ -249,7 +343,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
         tagList = []
         if noesis.optWasInvoked(NAD_OPT_TAGLIST):
             tag_str = noesis.optGetArg(NAD_OPT_TAGLIST)
-            print("taglist: ", tag_str)
+            print('option Tag List: ', tag_str)
             tags_array = tag_str.split(",")
             if len(tags_array) >= 2:
                 for i in range(0, len(tags_array), 2):
@@ -260,8 +354,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
         return [], 0
     # END get_tag_data
 
-    print('anims...')
-    print("anim sequecnes: ", len(anims))
+    print("anim sequecne count: ", len(anims))
     # annotate type
     # anim: NoeAnim
     # bone: NoeBone
@@ -271,7 +364,6 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
     # exporter only send 1 at a time? #
     model_array = []
     for anim in anims: #anim: NoeAnim
-        print('anim....')
         count_tracks = 0
         l_bones = len(anim.bones)
         l_frames = anim.numFrames
@@ -280,7 +372,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
         # pack animated bones [b][fr] #TODO only need matrix
         bones_animated = get_aniated_bone_array(anim, l_bones, l_frames)
         # get animation data
-        bone_tracks, count_tracks = build_track_data(bones_animated, anim.frameRate)
+        bone_tracks, count_tracks = build_track_data(bones_animated, anim.frameRate, l_frames)
         # add tags
         tag_list, tag_count = get_tag_data()
 
@@ -295,7 +387,7 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
             NAD_VERSION,     # 0 HDR_VER
             count_tracks,    # 1 HDR_NUM_TRK
             0,               # 2 HDR_FLAGS
-            anim.numFrames,  # 3 HDR_NUM_FRAME
+            anim.numFrames-1,# 3 HDR_NUM_FRAME (-1, account for 0 index)
             bone_tracks,     # 4 HDR_TRACKS
             tag_count,       # 5 HDR_NUM_TAG
             tag_list,        # 6 HDR_TAGS
@@ -308,12 +400,15 @@ def nad_export_anim(anims: NoeAnim, bs: NoeBitStream):
     # output file.
     print('write to file')
     for mdl in model_array:
-        nad_write_file(bs, mdl)
-        # TODO error checking
+        try:
+            nad_export_write_file(bs, mdl)
+        except Exception as e:
+            print('failed to write anims: ', e)
+            return 0
     return 1
 
 
-def nad_write_file(bs: NoeBitStream, m_data):
+def nad_export_write_file(bs: NoeBitStream, m_data):
     ''' write data to .nad file'''
     def write_key(bs: NoeBitStream, key_data: nad_key_xyz):
         ''' write key '''
@@ -350,7 +445,6 @@ def nad_write_file(bs: NoeBitStream, m_data):
                 write_keys(bs, bone[BONE_ANIMS_T]) # 3 keys[]
 
     def nad_write_tags(bs: NoeBitStream, m_data):
-        # hasTagList = noesis.optWasInvoked(NAD_OPT_TAGLIST)
         if len(m_data) > 0:
             for tag in m_data:
                 bs.writeFloat(float(tag[0])) # frame time
@@ -382,7 +476,7 @@ def nad_import_check_type(data):
 
 
 # @external. called when loading mesh
-def nad_merge_anims_to_mesh(filepath, bones):
+def nad_import_merge_anims_to_mesh(filepath, bones):
     ''' mesh loaded. prompt use for anim path '''
     print('===== merge_nad_anims_to_mesh =====')
     if verbose:
@@ -391,14 +485,15 @@ def nad_merge_anims_to_mesh(filepath, bones):
 
     bstream = NoeBitStream(rapi.loadIntoByteArray(filepath))
     #read stream
-    track_arrays, bone_count = nad_import_read_stream(bstream)
+    track_arrays, bone_count, duration = nad_import_read_stream(bstream)
     #build noesis data
-    anim_bones, bones, kfAnims = nad_import_build_noesis_animation(bones, track_arrays, bone_count)
+    anim_bones, bones, kfAnims = nad_import_build_noesis_animation( \
+        bones, track_arrays, bone_count, duration)
 
     return anim_bones, bones, kfAnims
 
 
-# .nad file loaded directly
+# @internal .nad file loaded directly
 def nad_import_load_anim(data, mdlList):
     ''' call animation file directly
         TODO apply to existing model?
@@ -411,9 +506,10 @@ def nad_import_load_anim(data, mdlList):
         # noesis.logFlush()
 
     #read stream
-    track_arrays, bone_count = nad_import_read_stream(bstream)
+    track_arrays, bone_count, duration = nad_import_read_stream(bstream)
     #build noesis data
-    anim_bones, bones, kfAnims = nad_import_build_noesis_animation([], track_arrays, bone_count)
+    anim_bones, bones, kfAnims = nad_import_build_noesis_animation( \
+        [], track_arrays, bone_count, duration)
     #check status
     if anim_bones == 0 and bones == 0:
         return 0
@@ -427,42 +523,40 @@ def nad_import_load_anim(data, mdlList):
 
 
 # build noesis data
-def nad_import_build_noesis_animation(bones, track_arrays, bone_count):
+def nad_import_build_noesis_animation(bones, track_arrays, bone_count, duration):
     ''' return animated bones '''
 
     if len(track_arrays) == 0:
         print('no track data')
         return 0, 0, 0
 
-    def nad_build_kf_data(track_arrays, bonesList, animBones, kfAnims):
+    def nad_build_kf_data(track_arrays, bonesList, animBones, kfAnims, duration):
+        ''' bone tracks. each track can be pos/rot/scale (type) '''
         print('nad_build_kf_data')
-        # bone tracks. each track can be pos/rot/scale (type)
-        fr_time_scale = 1.0 / NAD_FRAMERATE
-        listTS = []
+        rescale_time = ((duration+1.0001) / duration) # compensate for frame0. and round up
+
+        # loop through bone keyframes
         for trk in track_arrays:
             # count = trk[BTRACK_0_NUM_KEYS]
             b_idx = trk[BTRACK_1_INDEX] # bone index
             t_type = trk[BTRACK_2_TYPE] # track type
             keys = trk[BTRACK_3_KEYS]   # keyframe array
             posList, rotList, sclList = [], [], []
-            # pos0 = NoeVec3()# parent position
             for key in keys:
                 # loop through keyframes
-                f_time = key[KF_0_FR] * fr_time_scale  # / 30
-                scale = key[KF_1_SCALE] # frame time scale. TODO
+                f_time = key[KF_0_FR] * rescale_time / NAD_FRAMERATE
+                scale = key[KF_1_SCALE] # frame time scale.
                 xyx = key[KF_2_XYZ]     # pos/rot/scale vector
                 cf, bf, af = key[KF_3_CFACT], key[KF_4_BFACT], key[KF_5_AFACT] # F type
 
                 if t_type == TRK_TYPE_0_ROT:
                     rotList.append(NoeKeyFramedValue(f_time, NoeAngles.fromBytes(xyx)))
+                    # rotList.setExtraData
+                    # rotList.setFlags NOEKF_INTERPOLATE
                 elif t_type == TRK_TYPE_1_POS:
                     posList.append(NoeKeyFramedValue(f_time, NoeVec3.fromBytes(xyx)))
                 elif t_type == TRK_TYPE_2_SCL: # unused...
                     sclList.append(NoeKeyFramedValue(f_time, NoeVec3.fromBytes(xyx)))
-
-                # work out framerate
-                if b_idx == 0 and t_type == TRK_TYPE_0_ROT:
-                    listTS.append((f_time, scale))
 
             keyBone = NoeKeyFramedBone(b_idx)
             keyBone.setRotation(rotList, noesis.NOEKF_ROTATION_EULER_XYZ_3)
@@ -470,14 +564,6 @@ def nad_import_build_noesis_animation(bones, track_arrays, bone_count):
             keyBone.setScale(sclList, noesis.NOEKF_SCALE_VECTOR_3)
             animBones.append(keyBone)
 
-        frameScale = 1.0
-        if len(listTS) >= 2:
-            tStart = listTS[0][0]
-            tEnd = listTS[1][0]
-            tSclale = listTS[0][1]
-            frameScale = (tEnd - tStart)* tSclale # usualy = 1.0
-        print('calculated framerate: ', frameScale*NAD_FRAMERATE)
-        rapi.setPreviewOption("setAnimSpeed", str(NAD_FRAMERATE))
         # TODO name same as file?
         kfAnim = NoeKeyFramedAnim('base_anim', bonesList, animBones, frameRate=NAD_FRAMERATE)
         kfAnims.append(kfAnim)
@@ -490,7 +576,8 @@ def nad_import_build_noesis_animation(bones, track_arrays, bone_count):
     animBones = []
     kfAnims = []
 
-    nad_build_kf_data(track_arrays, bonesList, animBones, kfAnims)
+    nad_build_kf_data(track_arrays, bonesList, animBones, kfAnims, duration)
+    rapi.setPreviewOption("setAnimSpeed", str(NAD_FRAMERATE))
 
     return animBones, bonesList, kfAnims
 
@@ -502,18 +589,9 @@ def nad_import_read_stream(bs: NoeBitStream):
     use bones in mesh object if they exist
     TODO check bone counts
     '''
-    def load_keyframes(bs: NoeBitStream, key_count, track_type, bone_num):
+    def load_keyframes(bs: NoeBitStream, key_count):
         ''' _ '''
         data = []
-
-        # debug it
-        if verbose:
-            print("-----------")
-            print("keyframe count: %i" % (key_count))
-            print("track_type: %i (%s)" % (track_type, TRACK_TYPES[track_type]))
-            print("bone_num: %i" % (bone_num))
-            print("-----------")
-
         for _ in range(key_count):
             frame = bs.readFloat()  # 0 Frame (Timeline position)
             scale = bs.readFloat()  # 1 FrameScale
@@ -529,15 +607,36 @@ def nad_import_read_stream(bs: NoeBitStream):
         ''' Bone Track Definitions '''
         # bs = NoeBitStream(rapi.loadIntoByteArray(path))
         track = []
-        num_key = bs.readUInt()     # 0 NumKeys
-        bone_num = bs.readUInt()    # 2 BoneNum
-        track_type = bs.readUInt()  # 3 TrackType (0 = rotation, 1 = translate, 2 = scale)
-        keyframe = load_keyframes(bs, num_key, track_type, bone_num) # 4 keys
+        num_key = bs.readUInt()     # 0 BTRACK_0_NUM_KEYS
+        bone_num = bs.readUInt()    # 1 BTRACK_1_INDEX
+        track_type = bs.readUInt()  # 2 BTRACK_2_TYPE (0 = rotation, 1 = translate, 2 = scale)
+        keyframe = load_keyframes(bs, num_key) # 3 BTRACK_3_KEYS
         track = (num_key, bone_num, track_type, keyframe)
         return track, bone_num
     #END load_track
 
-    print("====== start import NAD ==========")
+    def load_tags(bs: NoeBitStream):
+        num_tags = bs.readUInt()
+        if verbose:
+            noesis.logPopup()
+            print('num_tags:', num_tags)
+        tag_string = ""
+        for i in range(num_tags):
+            frame_time = bs.readFloat()
+            tag_type = bs.readUInt()
+            if len(tag_string) > 0:
+                tag_string += ","
+            tag_string += "%0.1f,%i"%(frame_time, tag_type)
+            if verbose:
+                print('tag_num:', i)
+                print('frame_time:', frame_time)
+                print('tag_type:', tag_type)
+        if len(tag_string) > 0:
+            print("-- FOUND TAGS! --\nexport string: ", tag_string)
+        return num_tags
+    # END load_tags
+
+    print("====== start import NAD ======")
     track_arrays = []
     bone_count = 0
 
@@ -553,13 +652,6 @@ def nad_import_read_stream(bs: NoeBitStream):
         print("ERROR: wrong version")
         return 0, 0
 
-    # print
-    if verbose:
-        print('version:', version)
-        print('num_bone_tracks:', num_bone_tracks)
-        print('flags:', flags)
-        print('duration:', duration)
-
     # #################### #
     # get animation tracks #
     for _ in range(num_bone_tracks):
@@ -569,24 +661,15 @@ def nad_import_read_stream(bs: NoeBitStream):
 
     # ######################### #
     # Parsing the keyframe tags #
-    num_tags = bs.readUInt()
-    if verbose:
-        noesis.logPopup()
-        print('num_tags:', num_tags)
-    tag_string = ""
-    for i in range(num_tags):
-        frame_num = bs.readFloat()
-        tag_type = bs.readUInt()
-        if len(tag_string) > 0:
-            tag_string += ","
-        tag_string += "%f,%i"%(frame_num, tag_type)
-        if verbose:
-            print('tag_num:', i)
-            print('frame_num:', frame_num)
-            print('tag_type:', tag_type)
-    if len(tag_string) > 0:
-        print("FOUND TAGS! export str: ", tag_string)
-    if verbose:
-        print("====== finished reading NAD ==========")
+    num_tags = load_tags(bs)
 
-    return track_arrays, bone_count
+    # print
+    if verbose:
+        print('version:', version)
+        print('num bone tracks:', num_bone_tracks)
+        print('flags:', flags)
+        print('duration:', duration)
+        print('num tags:', num_tags)
+
+        print("====== finished reading NAD ======")
+    return track_arrays, bone_count, duration

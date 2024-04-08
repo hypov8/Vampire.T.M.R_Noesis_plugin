@@ -15,6 +15,7 @@ NOD_VERSION = 7
 
 
 def registerNoesisTypes():
+    ''' noesis plugin config '''
     handle = noesis.register("Vampire: TMR (NOD Mesh)", ".nod")
     noesis.setHandlerTypeCheck(handle, nod_checkType)
     noesis.setHandlerLoadModel(handle, nod_loadModel)
@@ -24,7 +25,7 @@ def registerNoesisTypes():
 
 
 def nod_checkType(data):
-    '''  '''
+    ''' run simple check on file '''
     bs = NoeBitStream(data)
     Version = bs.readUInt()
     if Version != NOD_VERSION:
@@ -35,6 +36,63 @@ def nod_checkType(data):
 # bones = []
 
 def nod_loadModel(data, mdlList):
+    ''' '''
+
+    def nod_printWeight(buf, bones):
+        wbuf = b''
+        bs = NoeBitStream(buf)
+        for _ in range(len(buf)//40):
+            bs.seek(32, 1)
+            w0 = bs.read('f4B')
+            w1 = [0, 0]
+            if w0[0] < 0.999999 and bones[w0[1]].parentIndex != -1:
+                w1[0] = 1.0 - w0[0]
+                w1[1] = bones[w0[1]].parentIndex
+            wbuf += noePack('B', w0[1])
+            wbuf += noePack('B', w1[1])
+            wbuf += noePack('f', w0[0])
+            wbuf += noePack('f', w1[0])
+        return wbuf
+    # END nod_printWeight
+
+    def nod_load_external_nad_file(mdl, bones):
+        ''' file has bones. ask to import .nad '''
+
+        def validate_nod_file(filename):
+            print('filename: ', filename)
+            if (filename is None) or (filename == ''):
+                return "Error: empty file path"
+            if not rapi.checkFileExists(filename):
+                return "Error: invalid file path"
+            if filename[len(filename) -4:] != '.nad':
+                return "Error: invalid file extension"
+            print('filename ok')
+            return None
+
+        if DEBUG_PRINT:
+            noesis.logPopup()
+        print("====== mesh has bones ==========")
+
+        nad_file = noesis.userPrompt( \
+            noesis.NOEUSERVAL_FILEPATH,
+            'Import Animation', # title string
+            'Found bones. Select a .nad animtion file to use...', # prompt string
+            '', # default value string
+            validate_nod_file)  # input validation handler
+
+        if nad_file:
+            # getExtensionlessName
+            try:
+                print('Animation file: ' + nad_file)
+                from fmt_NAD import nad_import_merge_anims_to_mesh
+                _, _, kfAnims = nad_import_merge_anims_to_mesh(nad_file, bones)
+                mdl.setAnims(kfAnims)
+            except Exception as e:
+                print('failed to load anims: ', e)
+    # END nod_printWeight
+
+    print("====== start import NOD ======")
+
     bs = NoeBitStream(data)
     ctx = rapi.rpgCreateContext()
     # global bones
@@ -116,7 +174,7 @@ def nod_loadModel(data, mdlList):
         MinVertices = bs.readUShort()
         GroupFlags = bs.readUShort()
         if DEBUG_PRINT:
-            print('>>>>>GROUP:',Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags)
+            print('>>>>>GROUP:', Material_ID, NumFaces, NumVertices, MinVertices, GroupFlags)
         #---------------
         HASLOD = (GroupFlags & 0x1)#bool
         NOWEIGHTS = (GroupFlags & 0x2)
@@ -133,12 +191,12 @@ def nod_loadModel(data, mdlList):
         unk = bs.readUShort()
         if DEBUG_PRINT:
             print(mesh_names[MeshNum])
-            print(Material_ID,NumFaces,NumVertices,MinVertices,GroupFlags,'BoneNum:',BoneNum,MeshNum,unk)
+            print(Material_ID, NumFaces, NumVertices, MinVertices, GroupFlags, 'BoneNum:', BoneNum, MeshNum, unk)
 
         curPos = bs.tell()
         bs.seek(vbuf_ofs+(vcnt*40))
         vbuf = bs.read(NumVertices * 40)
-        wbuf = printWeight(vbuf, bones)
+        wbuf = nod_printWeight(vbuf, bones)
         bs.seek(ibuf_ofs+(icnt*6))
         if DEBUG_PRINT:
             print('ifs:',bs.tell())
@@ -178,69 +236,12 @@ def nod_loadModel(data, mdlList):
     mdl.setBones(bones)
     mdlList.append(mdl)
     rapi.setPreviewOption("setAngOfs", "0 90 0")
+    print("====== finished reading NOD ======")
     return 1
 
 
-def nod_load_external_nad_file(mdl, bones):
-    # file has bones
-    # noesis.logPopup()
-
-    def validate_nod_file(filename):
-        print('filename: ', filename)
-        if (filename is None) or (filename == ''):
-            return "Error: empty file path"
-        if not rapi.checkFileExists(filename):
-            return "Error: invalid file path"
-        if filename[len(filename) -4:] != '.nad':
-            return "Error: invalid file extension"
-        print('filename ok')
-        return None
-
-    print("====== mesh has bones ==========")
-
-    # nad_file = 'F:/dev_code/Vampire_MR/nod/Models/out/base_anim.nad'
-    #debug
-    nad_file = noesis.userPrompt( \
-        noesis.NOEUSERVAL_FILEPATH,
-        'Import Animation', # title string
-        'Found bones. Select a .nad animtion file to use...', # prompt string
-        '', # default value string
-        validate_nod_file)  # input validation handler
-
-
-    if nad_file:
-        # getExtensionlessName
-        try:
-            print('Animation file: ' + nad_file)
-            from fmt_NAD import nad_merge_anims_to_mesh
-            _, _, kfAnims = nad_merge_anims_to_mesh(nad_file, bones)
-            mdl.setAnims(kfAnims)
-        except Exception as e:
-            print('failed to load anims: ', e)
-
-
-def printWeight(buf, bones):
-    wbuf = b''
-    bs = NoeBitStream(buf)
-    for x in range(len(buf)//40):
-        bs.seek(32, 1)
-        w0 = bs.read('f4B')
-        w1 = [0, 0]
-        #if w0[1] >= len(bones):
-        #    print('>>>>>>>>>>>>>>>>>>>>>>>>>>>>...',w0[1])
-        if w0[0] < 0.999999 and bones[w0[1]].parentIndex != -1:
-            w1[0] = 1.0 - w0[0]
-            w1[1] = bones[w0[1]].parentIndex
-        #print(w0[1], w1[1], w0[0], w1[0])
-        wbuf += noePack('B', w0[1])
-        wbuf += noePack('B', w1[1])
-        wbuf += noePack('f', w0[0])
-        wbuf += noePack('f', w1[0])
-
-    return wbuf
-
-
 def nod_write_model(mdl, bs: NoeBitStream):
+    ''' _ '''
     print('WRITE NOD')
     #Format
     bs.writeUInt(7)#version
@@ -286,23 +287,26 @@ def nod_write_model(mdl, bs: NoeBitStream):
     for bone in bones:
         nodes.append([-1, -1, bone.parentIndex])
 
+    len_nodes = len(nodes)
+
     #set child
-    for x in range(len(nodes)):
-        for y in range(len(nodes)):
+    for x in range(len_nodes):
+        for y in range(len_nodes):
             if nodes[y][2] == x:
                 nodes[x][1] = y
                 break
 
     #set sibling
-    for x in range(len(nodes)):
+    for x in range(len_nodes):
         sibling = []
-        for y in range(len(nodes)):
+        for y in range(len_nodes):
             if nodes[x][2] == nodes[y][2]:
                 sibling.append(y)
         if sibling:
-            for y in range(len(sibling)):
+            len_sibling = len(sibling)
+            for y in range(len_sibling):
                 if sibling[y] == x:
-                    if y+1 < len(sibling):
+                    if y+1 < len_sibling:
                         nodes[x][0] = sibling[y+1]
 
     if DEBUG_PRINT:
@@ -339,7 +343,7 @@ def nod_write_model(mdl, bs: NoeBitStream):
         if len(mesh.uvs) <= 0:
             mesh.uvs = [NoeVec3()]*vnum
         if len(mesh.weights) <= 0:
-            mesh.weights = [NoeVertWeight([0],[1])]*vnum
+            mesh.weights = [NoeVertWeight([0], [1])]*vnum
         #mesh.weights = [NoeVertWeight([0],[1])]*vnum
         for x in range(vnum):
             bs.writeBytes(mesh.positions[x].toBytes())
