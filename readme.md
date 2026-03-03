@@ -3,6 +3,13 @@ Vampire the Masquerade: Redemption import/export plugin for noesis
 original author: Durik256\
 update: hypov8
 
+## usefull links
+https://web.archive.org/web/20210110082035/https://www.e-mods.net/nodsdk/Docs/NOD.htm
+https://web.archive.org/web/20210110082006/https://www.e-mods.net/nodsdk/Docs/NAD.htm
+https://www.moddb.com/members/lithtechguru/tutorials/how-to-import-models-from-blender-into-vampire-the-masquerade-redemption
+https://www.moddb.com/games/vampire-the-masquerade-redemption/tutorials/how-to-import-models-from-blender-into-vampire-the-masquerade-redemption
+https://ide.kaitai.io/
+
 
 .nad export options
 ------
